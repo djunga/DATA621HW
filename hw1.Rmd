@@ -1,0 +1,218 @@
+---
+title: 'HW1: Multiple Linear Regression'
+author: "Tora Mullings"
+date: "2022-12-15"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Background
+
+Given a set of professional baseball teams and their performance metrics for a 162-game season, how can we build a model that can be used to predict the number of wins for each team? The data set contains metrics of teams from 1871 to 2006.
+
+
+# Data Exploration
+
+```{r, message=F, warning=F}
+library(tidyverse)
+library(corrplot)
+library(reshape2)  # melt function for distributions of variables
+library(moments)   # determine skewness of residuals
+library(MASS)   # Box-Cox transformation
+library(broom)
+library(knitr)
+```
+
+
+```{r, echo=F}
+df.train <- read.csv('https://raw.githubusercontent.com/djunga/DATA621HW/main/moneyball-training-data.csv')
+df.eval <- read.csv('https://raw.githubusercontent.com/djunga/DATA621HW/main/moneyball-evaluation-data.csv')
+#head(df.train)
+```
+
+
+### Description of variables
+
+![Description of variables](variables.jpg)
+
+
+```{r, echo=F}
+summary(df.train)
+```
+
+```{r, echo=F}
+str(df.train)
+```
+
+* There are 2,276 observations and 17 columns.
+* Of these columns, 15 are predictors.
+* Of the remaining 2, there is an index column, and the column with the response variable is named `TARGET_WINS`.
+* Each observation represents a baseball team.
+* `TARGET_WINS`, the response variable, is the number wins by the baseball team.
+* There appears to be many missing values in the `TEAM_BATTING_HBP` column. We will take a closer look at how much is missing.
+
+
+### Missing values
+
+```{r, echo=F, warning=F}
+((colSums(is.na(df.train)) / nrow(df.train)) * 100)  %>%   broom::tidy() %>% kable()
+```
+
+* Over 90% of `TEAM_BATTING_HBP` is missing.
+* Over one-third of `TEAM_BASERUN_CS` is missing.
+* Other columns contain less missing data.
+
+### Correlation plot
+```{r, echo=F}
+corrplot(cor(dplyr::select(df.train, -"INDEX"), use = "complete.obs"), tl.col="black", tl.cex=0.6, order='AOE')
+```
+
+There exists a strong positive correlation between:
+
+* `TEAM_BASERUN_CS`, `TEAM_BASERUN_SB`
+* `TEAM_BATTING_SO`, `TEAM_PITCHING_SO`
+* `TEAM_BATTING_BB`, `TEAM_PITCHING_BB`
+* `TEAM_BATTING_HR`, `TEAM_PITCHING_HR`
+* `TEAM_PITCHING_H`, `TEAM_BATTING_2B`
+* `TEAM_BATTING_H`, `TEAM_PTICHING_H`
+
+There exists a moderately positive correlation between:
+
+* `TEAM_WINS`, `TEAM_PITCHING_BB`
+* `TEAM_WINS`, `TEAM_BATTING_BB`,
+* `TEAM_WINS`, `TEAM_PITCHING_HR`
+
+There exists a moderately negative correlation between:
+
+* `TARGET_WINS`, `TEAM_FIELDING_E`.
+* `TEAM_PITCHING_H`, `TEAM_PTICHING_SO`
+* `TEAM_BATTING_H`, `TEAM_PITCHING_SO`
+
+
+
+
+We can further visualize the correlations against `TARGET_WINS` using scatterplots:
+
+```{r, echo = F, warning = F, message = F}
+mlt.training.plt = melt(dplyr::select(df.train, -c("TARGET_WINS")), id.vars = c("INDEX"))
+mlt.training.plt = merge(mlt.training.plt, dplyr::select(df.train, c("INDEX", "TARGET_WINS")), by = "INDEX")
+ggplot(data = mlt.training.plt, aes(value, TARGET_WINS)) + geom_point() + facet_wrap(~variable, scales = "free")
+```
+
+
+## Distributions
+
+We can visualize the variables using histograms to account for non-normal distributions:
+
+```{r, echo = F, warning = F, message = F}
+mlt.training = melt(df.train, id.vars = "INDEX")
+ggplot(data = mlt.training, aes(value)) + geom_histogram() + facet_wrap(~variable, scales = "free")
+```
+
+One of the key takeaways here is that strikeouts by batters has a bi-modal distribution. Several variables, such as strikeouts by pitchers and walks allowed are skewed right. The response variable,`TARGET_WINS` has a normal distribution.
+
+# Build Models
+Going forward, we will drop the `TEAM_BATTING_HBP` variable since it has too many missing values.
+```{r, echo=F}
+df.train <- dplyr::select(df.train,-"TEAM_BATTING_HBP")
+```
+
+
+## Model 1
+We can start by fitting a model with all the predictors.
+
+```{r, echo=F}
+m1 <- lm(TARGET_WINS ~ ., dplyr::select(df.train, -"INDEX"))
+```
+
+```{r, echo=F}
+par(mfrow=c(2,1))
+hist(m1$resid, main="Distribution of Model 1 Residuals", xlab="Residuals")
+qqnorm(m1$resid)
+qqline(m1$resid)
+```
+
+
+```{r, include=F}
+skewness(m1$resid)
+```
+The skewness measure of the residuals is -0.01, which suggests a negative skew.
+
+If the magnitude of the skew were larger, we could attempt to use the Box-Cox method to determine what transformation we should apply to decrease the skew.
+
+```{r, include=F}
+# shows residuals plot, q-q, standardized residuals, cook's distance
+# par(mfrow = c(2, 2))
+# plot(m2)
+```
+
+Below are the estimates of the coefficients of Model 1.
+
+```{r, echo=F}
+summary(m1)
+```
+
+Eight out of 15 of the predictors have the wrong signs, going against the theoretical effects on `TARGET_WINS` mentioned in the beginning.
+
+* TEAM_BATTING_3B
+* TEAM_BATTING_HR
+* TEAM_BATTING_BB
+* TEAM_BATTING_SO
+* TEAM_PITCHING_HR
+* TEAM_PITCHING_BB
+* TEAM_PITCHING_SO
+* TEAM_FIELDING_DP
+
+## Model 2: Variable Selection by Intuition
+
+```{r, echo=F}
+m2 <- lm(TARGET_WINS ~ TEAM_BATTING_2B + TEAM_BATTING_3B + TEAM_BASERUN_SB + TEAM_BASERUN_SB + TEAM_FIELDING_E + TEAM_FIELDING_DP, data=dplyr::select(df.train, -"INDEX"))
+```
+
+```{r, echo=F}
+par(mfrow=c(2,1))
+hist(m2$resid, main="Distribution of Model 2 Residuals", xlab="Residuals")
+qqnorm(m2$resid)
+qqline(m2$resid)
+```
+
+
+
+```{r, include=F}
+skewness(m2$resid)
+```
+Model 2 has a skewed value of 0.022. This is more skewed than the first model.
+
+
+```{r, echo=F}
+summary(m2)
+```
+
+The sign of `TEAM_FIELDING_DP` is counterintuitive.
+
+We can use the Box-Cox method to see if a transformation should be applied to address the skewness.
+```{r, include=F}
+b <- boxcox(TARGET_WINS ~ TEAM_BATTING_2B + TEAM_BATTING_3B + TEAM_BASERUN_SB + TEAM_BASERUN_SB + TEAM_FIELDING_E + TEAM_FIELDING_DP, data=dplyr::select(df.train, -c("INDEX")))
+b$x[which(b$y==max(b$y))]
+```
+Lambda = 1.1515
+
+The lambda corresponding to the maximum log-likelihood is close to 1, so a transformation is not necessary.
+
+
+# Model Evaluation
+
+The metric I am deciding to use to evaluate the models is Adjusted R-squared. For Model 1, it is 0.43. This means that 43% of the variance in `TARGET_WINS` is explained by the predictors. For Model 2, it is 22%. Therefore, Model 1 should be used to make predictions.
+
+
+
+
+
+
+
